@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Memory One</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+  /* Layout: one centered reading column; controls above the passage. */
+  :root {
+    --bg: #eef2f1;
+    --panel: #ffffff;
+    --text: #1d2422;
+    --muted: #5f6b68;
+    --accent: #2f6f62;
+    --accent-text: #ffffff;
+    --border: #d3dcd9;
+    --gap-line: #b9c6c2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #171c1b;
+      --panel: #212827;
+      --text: #e6ecea;
+      --muted: #9aa7a3;
+      --accent: #5fb3a1;
+      --accent-text: #0f201c;
+      --border: #34403d;
+      --gap-line: #51605c;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #171c1b;
+    --panel: #212827;
+    --text: #e6ecea;
+    --muted: #9aa7a3;
+    --accent: #5fb3a1;
+    --accent-text: #0f201c;
+    --border: #34403d;
+    --gap-line: #51605c;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main {
+    max-width: 860px;
+    margin: 0 auto;
+    padding-block: 24px 64px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  button:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  h1 { font-size: 1.5rem; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  textarea {
+    width: 100%;
+    min-height: 320px;
+    padding: 14px;
+    font: 1.05rem/1.6 Georgia, "Times New Roman", serif;
+    color: var(--text);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    resize: vertical;
+  }
+  .bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin: 14px 0;
+  }
+  button {
+    font: inherit;
+    padding: 9px 16px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--text);
+    cursor: pointer;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  button:disabled { opacity: 0.4; cursor: default; }
+  .spacer { flex: 1; }
+  .progress { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .meter { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; margin-bottom: 14px; }
+  .meter > div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+  #passage {
+    padding: 20px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font: 1.15rem/1.8 Georgia, "Times New Roman", serif;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+  }
+  /* Hidden characters keep their exact width so nothing shifts. */
+  #passage .h { color: transparent; border-bottom: 1px solid var(--gap-line); }
+  #passage.peek .h { color: var(--muted); }
+  .hint { color: var(--muted); font-size: .9rem; margin-top: 10px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Memory One</h1>
+  <p class="sub">Paste a passage, then press Forward to make letters fade away one in twenty at a time. The Gettysburg Address is loaded as an example; replace it with your own text.</p>
+
+  <section id="editView">
+    <textarea id="input" placeholder="Paste the text you want to memorize here…"></textarea>
+    <div class="bar">
+      <button id="startBtn" class="primary">Start memorizing</button>
+    </div>
+  </section>
+
+  <section id="practiceView" hidden>
+    <div class="bar">
+      <button id="backBtn">&larr; Back</button>
+      <button id="fwdBtn" class="primary">Forward &rarr;</button>
+      <button id="peekBtn" title="Hold to see the hidden letters">Hold to peek</button>
+      <span class="spacer"></span>
+      <span class="progress" id="progress"></span>
+    </div>
+    <div class="meter"><div id="meterFill"></div></div>
+    <div id="passage"></div>
+    <div class="bar">
+      <button id="reshuffleBtn">Start over (new order)</button>
+      <button id="editBtn">Edit text</button>
+    </div>
+    <p class="hint">Keyboard: &rarr; forward, &larr; back, hold Space to peek.</p>
+  </section>
+</main>
+
+<script>
+  const STEPS = 20; // each step hides 1/20 of the characters
+
+  const $ = id => document.getElementById(id);
+  const input = $('input'), passage = $('passage');
+
+  let spans = [];   // one span per character of the text
+  let order = [];   // shuffled indices of non-whitespace characters
+  let step = 0;     // how many forward clicks are currently applied
+
+  const SAMPLE = 'Four score and seven years ago our fathers brought forth on this continent, a new nation, conceived in Liberty, and dedicated to the proposition that all men are created equal.\n\n' +
+    'Now we are engaged in a great civil war, testing whether that nation, or any nation so conceived and so dedicated, can long endure. We are met on a great battle-field of that war.';
+
+  let saved = '';
+  try { saved = localStorage.getItem('memoryOne.text') || ''; } catch (e) {}
+  input.value = saved || SAMPLE;
+
+  function shuffle(a) {
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  }
+
+  // Number of characters hidden after n steps; the final step always hides everything.
+  const hiddenAt = n => Math.round(order.length * n / STEPS);
+
+  function start() {
+    const text = input.value.replace(/\r\n/g, '\n');
+    if (!text.trim()) { input.focus(); return; }
+    try { localStorage.setItem('memoryOne.text', text); } catch (e) {}
+
+    passage.textContent = '';
+    spans = [];
+    order = [];
+    const frag = document.createDocumentFragment();
+    for (const ch of text) {
+      if (/\s/.test(ch)) {
+        frag.appendChild(document.createTextNode(ch));
+        spans.push(null);
+      } else {
+        const s = document.createElement('span');
+        s.textContent = ch;
+        frag.appendChild(s);
+        order.push(spans.length);
+        spans.push(s);
+      }
+    }
+    passage.appendChild(frag);
+    shuffle(order);
+    step = 0;
+
+    $('editView').hidden = true;
+    $('practiceView').hidden = false;
+    update();
+  }
+
+  function forward() {
+    if (step >= STEPS) return;
+    for (let i = hiddenAt(step); i < hiddenAt(step + 1); i++) spans[order[i]].classList.add('h');
+    step++;
+    update();
+  }
+
+  function back() {
+    if (step <= 0) return;
+    for (let i = hiddenAt(step - 1); i < hiddenAt(step); i++) spans[order[i]].classList.remove('h');
+    step--;
+    update();
+  }
+
+  function update() {
+    const pct = Math.round(100 * hiddenAt(step) / Math.max(order.length, 1));
+    $('progress').textContent = `Step ${step} of ${STEPS} · ${pct}% hidden`;
+    $('meterFill').style.width = pct + '%';
+    $('backBtn').disabled = step === 0;
+    $('fwdBtn').disabled = step === STEPS;
+  }
+
+  function setPeek(on) { passage.classList.toggle('peek', on); }
+
+  $('startBtn').onclick = start;
+  $('fwdBtn').onclick = forward;
+  $('backBtn').onclick = back;
+  $('reshuffleBtn').onclick = start;
+  $('editBtn').onclick = () => {
+    $('practiceView').hidden = true;
+    $('editView').hidden = false;
+    input.focus();
+  };
+
+  const peekBtn = $('peekBtn');
+  peekBtn.addEventListener('pointerdown', () => setPeek(true));
+  ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => peekBtn.addEventListener(ev, () => setPeek(false)));
+
+  document.addEventListener('keydown', e => {
+    if ($('practiceView').hidden) return;
+    if (e.key === 'ArrowRight') { forward(); e.preventDefault(); }
+    else if (e.key === 'ArrowLeft') { back(); e.preventDefault(); }
+    else if (e.key === ' ') { setPeek(true); e.preventDefault(); }
+  });
+  document.addEventListener('keyup', e => { if (e.key === ' ') setPeek(false); });
+</script>
+</body>
+</html>
